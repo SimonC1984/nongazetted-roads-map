@@ -520,10 +520,17 @@ def build_area(a: argparse.Namespace, area_id: str, label: str, bbox: tuple,
     geojson_path = out_dir / "data" / f"{area_id}.geojson"
     use_tiles = (a.tiles or area_id in STATES or area_id == "australia"
                  or counts["total"] > GEOJSON_FEATURE_LIMIT)
-    if use_tiles:
+    if counts["total"] == 0:
+        print(f"{label}: no matching roads found; nothing to draw.")
+        if tiles_dir.exists():
+            shutil.rmtree(tiles_dir)
+        geojson_path.unlink(missing_ok=True)
+        mode, size = "empty", 0.0
+    elif use_tiles:
         need("tippecanoe", "brew install tippecanoe   (or build from github.com/felt/tippecanoe)")
         if tiles_dir.exists():
             shutil.rmtree(tiles_dir)
+        tiles_dir.parent.mkdir(parents=True, exist_ok=True)  # tippecanoe won't create parents
         run(["tippecanoe", "-e", tiles_dir, "-l", "roads", "-Z", "0", "-z", a.maxzoom,
              "--no-tile-compression", "--drop-densest-as-needed",
              "--extend-zooms-if-still-dropping", "--force", seq])
