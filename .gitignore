@@ -1,0 +1,6 @@
+output/
+site/
+*.osm.pbf
+*.part
+__pycache__/
+.DS_Store

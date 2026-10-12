@@ -1,0 +1,108 @@
+name: Build and publish map
+
+on:
+  workflow_dispatch:
+    inputs:
+      regions:
+        description: "Areas to build, space-separated: 'states' for every state, or e.g. 'wa nt kimberley'"
+        required: true
+        default: "states"
+      maxzoom:
+        description: "Tile detail (12 = smaller site, 13 = default, 14 = most detail)"
+        required: true
+        default: "13"
+        type: choice
+        options: ["12", "13", "14"]
+      include_unclassified:
+        description: "Also include unnumbered minor roads (noisier)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 16 1 * *"   # monthly refresh: 3am on the 2nd, Sydney time
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install osmium and tippecanoe
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y osmium-tool
+          if ! sudo apt-get install -y tippecanoe; then
+            sudo apt-get install -y build-essential libsqlite3-dev zlib1g-dev
+            git clone --depth 1 https://github.com/felt/tippecanoe.git /tmp/tippecanoe
+            make -C /tmp/tippecanoe -j"$(nproc)"
+            sudo make -C /tmp/tippecanoe install
+          fi
+          osmium --version | head -1
+          tippecanoe --version 2>&1 | head -1
+
+      - name: Download OpenStreetMap extract for Australia
+        run: |
+          mkdir -p "$RUNNER_TEMP/osm"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/osm/australia.osm.pbf" \
+            https://download.geofabrik.de/australia-oceania/australia-latest.osm.pbf
+          ls -lh "$RUNNER_TEMP/osm/australia.osm.pbf"
+
+      - name: Build map
+        env:
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          REGIONS: ${{ inputs.regions || 'states' }}
+          MAXZOOM: ${{ inputs.maxzoom || '13' }}
+          UNCLASSIFIED: ${{ inputs.include_unclassified && '--include-unclassified' || '' }}
+        run: |
+          if [ -z "$GOOGLE_MAPS_API_KEY" ]; then
+            echo "::error::Add a repository secret named GOOGLE_MAPS_API_KEY (Settings > Secrets and variables > Actions)."
+            exit 1
+          fi
+          python3 nongazetted_roads.py build \
+            --region $REGIONS \
+            --maxzoom "$MAXZOOM" $UNCLASSIFIED \
+            --pbf "$RUNNER_TEMP/osm/australia.osm.pbf" \
+            --out site
+          rm -rf site/work site/cache
+          touch site/.nojekyll
+
+      - name: Check site size
+        run: |
+          echo "### Built areas" >> "$GITHUB_STEP_SUMMARY"
+          python3 - >> "$GITHUB_STEP_SUMMARY" <<'EOF'
+          import json
+          print("| Area | Segments | Size (MB) |\n|---|---:|---:|")
+          for a in json.load(open("site/areas.json")):
+              print(f"| {a['label']} | {a['counts']['total']:,} | {a['size_mb']:,.1f} |")
+          EOF
+          size_mb=$(du -sm site | cut -f1)
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Total site size: ${size_mb} MB** (GitHub Pages limit is about 1,000 MB)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$size_mb" -gt 950 ]; then
+            echo "::error::Site is ${size_mb} MB, too big for GitHub Pages. Re-run with maxzoom 12 or fewer areas."
+            exit 1
+          fi
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
