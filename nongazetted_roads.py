@@ -453,7 +453,7 @@ async function initMap() {
 }
 window.initMap = initMap;
 </script>
-<script async src="https://maps.googleapis.com/maps/api/js?key=__API_KEY__&callback=initMap"></script>
+<script async src="https://maps.googleapis.com/maps/api/js?key=__API_KEY__&loading=async&callback=initMap"></script>
 </body>
 </html>
 """
